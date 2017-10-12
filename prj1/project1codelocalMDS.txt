@@ -1,0 +1,127 @@
+---
+title: "Project 1, MDS with missing data"
+author: "Esther Visser"
+date: "12 october 2017"
+#output: html_document
+---
+In this part of the code (which is written in R, the lines that should be ran are the lines between the ```{r} and ```) we describe how we use MDS locally. The main idea is that we remove some entries from the distancematrix. Then we split up the molecule into different parts for which we have all the distances. Then we are able to perform the classical MDS, after which we can glue the molecule together again by the atoms that are in both parts.
+
+```{r}
+setwd("~/Universiteit/Master/Mathematical_introduction_to_data_science")
+```
+
+First input the data.
+```{r}
+tabel1<-read.table("protein3D/PF00013_1WVN.pdb")
+tabel2<-read.table("protein3D/PF00018_2HDA.pdb")
+tabel3<-read.table("protein3D/PF00254_1R9H.pdb")
+
+```
+
+Now I make a table with just the xyz coordinates for each of the data and add rownames.
+```{r}
+table1<-tabel1[,3:5]
+table2<-tabel2[,3:5]
+table3<-tabel3[,3:5]
+rownames(table1)<-tabel1[,1]
+rownames(table2)<-tabel2[,1]
+rownames(table3)<-tabel3[,1]
+```
+
+A function which adds normal noise to every component xyz of every entry with as input a list of xyz coordinates and the variance for the normal noise and as output again a list of xyz coordinates.
+```{r}
+normcoord<-function(table,var){m<-matrix(nrow=dim(table)[1],ncol=dim(table)[2])
+for(i in 1:dim(table)[1]){ for(j in 1:dim(table)[2]){
+  m[i,j]<-table[i,j]+rnorm(1,sd=var)
+}
+}
+rownames(m)<-rownames(table)
+return(m)
+}
+```
+
+The next function is the most important: it takes as input the distance matrix with noise applied and the number of entries that should be missing. However, because I also wanted to be able to give the corresponding original data with the correct entries removed, it also takes the original table as input, but it is not used in the algorithm.
+```{r}
+total<-function(matr,n,table){
+rand<-sample(1: dim(matr)[1],2*n,replace=F) # randomly select the entries that should be missing. However, none of them can be on the same row or column.
+distt<-matr
+for(i in 1:n){
+distt[rand[2*i-1],rand[2*i]]<-NA
+distt[rand[2*i],rand[2*i-1]]<-NA} #actually remove the entries by setting the values to be NA
+set1<-distt[-rand[2*1:n],-rand[2*1:n]] #here we split up the molecule into two different parts, and if d_{ij} is missing then part one contains the atom i and not j and part two contains atom j and not i. All other atoms are included into both parts.
+set2<-distt[-rand[2*1:n-1],-rand[2*1:n-1]]
+originaldata1<-table[-rand[2*1:n],] #also remove the corresponding atoms of the original data for the output.
+originaldata2<-table[-rand[2*1:n-1],]
+
+fit1<-cmdscale(set1,eig=TRUE,k=3) #Do the MDS on both parts of the atom.
+fit2<-cmdscale(set2,eig=TRUE,k=3)
+  
+#The next part is for the case that there is a rotation matrix or other function in R that can align the two parts. The rotation matrix I found myself didn't work, so this part is not used, but the two parts are exported seperatly to python to align them there.
+int<-as.vector(intersect(rownames(fit1$points),rownames(fit2$points))) # find the atoms that are in both parts
+fit1pointsmean<-fit1$points #make sure the molecule is centered around the origin.
+for(i in 1:dim(fit1$points)[1]){
+  fit1pointsmean[i,1]<-fit1$points[i,1]-colMeans(fit1$points[int,])[1]
+  fit1pointsmean[i,2]<-fit1$points[i,2]-colMeans(fit1$points[int,])[2]
+  fit1pointsmean[i,3]<-fit1$points[i,3]-colMeans(fit1$points[int,])[3]
+}
+fit2pointsmean<-fit2$points
+for(i in 1:dim(fit2$points)[1]){
+  fit2pointsmean[i,1]<-fit2$points[i,1]-colMeans(fit2$points[int,])[1]
+  fit2pointsmean[i,2]<-fit2$points[i,2]-colMeans(fit2$points[int,])[2]
+  fit2pointsmean[i,3]<-fit2$points[i,3]-colMeans(fit2$points[int,])[3]
+}  
+rot<-diag(3) #the rotation matrix that should do the job of aligning the two parts, which is still missing.
+fit1pointsrot<-t(rot%*%t(fit1pointsmean)) #rotate part 1 to align it with part 2.
+set3<-matrix(c(1:(3*dim(matr)[1])),ncol=3) # this will be the parts glued together as follows: if an atom is in both, we just take the mean of the coordinates. If an atom is in one of the parts, we just take the value of the atom in that part.
+rownames(set3)<-rownames(matr)
+for(i in rownames(matr)){j<-as.character(i)
+  if(j %in% rownames(fit1$points)){
+    if(j %in% rownames(fit2$points)){
+      set3[j,1]<-1/2*(fit1pointsrot[j,1]+fit2pointsmean[j,1])
+      set3[j,2]<-1/2*(fit1pointsrot[j,2]+fit2pointsmean[j,2])
+      set3[j,3]<-1/2*(fit1pointsrot[j,3]+fit2pointsmean[j,3])
+    } else {
+      set3[j,1]<-fit1pointsrot[j,1]
+      set3[j,2]<-fit1pointsrot[j,2]
+      set3[j,3]<-fit1pointsrot[j,3]
+    }} else {
+      set3[j,1]<-fit2pointsmean[j,1]
+      set3[j,2]<-fit2pointsmean[j,2]
+      set3[j,3]<-fit2pointsmean[j,3]
+    }
+}
+output<-list(entire = set3, part1 = fit1pointsmean, part2=fit2pointsmean, orig1 = originaldata1, orig2 = originaldata2)
+return(output)
+}
+
+
+```
+
+Lastly, since we still need to make the distancematrix we make the following function. The function rdist is used instead of dist to make the distance matrix have an entry on every position. The funtion takes as input the table with noise aplied, the number of entries that should be missing and the original table.
+```{r}
+library(fields) #for the function rdist
+totalcoord<-function(tabel,n, tabel2){
+  matr<-rdist(tabel,tabel)
+rownames(matr)<-rownames(tabel)
+total(matr,n,tabel2)}
+```
+
+Output the data
+```{r}
+for(x in 1:27){
+  for(z in c(1:20)){
+y1=paste(c("sparsedata/data1","norm","var",as.character(z),"missing", as.character(x),"part1.csv"),collapse=" ")
+y2=paste(c("sparsedata/data1","norm","var",as.character(z),"missing", as.character(x),"part2.csv"),collapse=" ")
+y3=paste(c("sparsedata/data1","norm","var",as.character(z),"missing", as.character(x),"orignal1.csv"),collapse=" ")
+y4=paste(c("sparsedata/data1","norm","var",as.character(z),"missing", as.character(x),"orignal2.csv"),collapse=" ")
+data<-totalcoord(normcoord(table3,z),x,table3)
+write.csv(data$part1,file=y1)
+write.csv(data$part2,file=y2)
+write.csv(data$orig1,file=y3)
+write.csv(data$orig2,file=y4)}
+}
+
+```
+
+Improvements: the number of missing values in the distancetable can only be less or equal than half of the number of atoms. This can certainly be improved by splitting up the molecule into more parts, such that all atoms are in at least one of the parts and every part has at least 3 atoms in common with at least one other part, so that you can still glue them together.
+Note as well that in the Python code we did not glue them together yet, we just calculated the RMSD for both parts and took the mean. The method gets improved if you actually glue them together, but for that you need the rotationmatrix that does the job. Right now, it is not sure that the best rotation for the parts seperately is also the best rotation for the molecule if glued together. However, because of the few entries missing in the distancematrix, this will not be that important.
